@@ -5,6 +5,7 @@
 //! extern crate serde;
 //! extern crate serde_json;
 //! extern crate serde_ignored;
+//! extern crate serde_value;
 //!
 //! use std::collections::{BTreeSet as Set, BTreeMap as Map};
 //!
@@ -25,7 +26,7 @@
 //!     "dependencies": {
 //!         "serde": {
 //!             "version": "0.9",
-//!             "typo1": ""
+//!             "typo1": "unused"
 //!         }
 //!     },
 //!     "typo2": {
@@ -39,9 +40,11 @@
 //!
 //! // We will build a set of paths to the unused elements.
 //! let mut unused = Set::new();
+//! let mut unused2 = Map::new();
 //!
-//! let p: Package = serde_ignored::deserialize(jd, |path| {
+//! let p: Package = serde_ignored::deserialize(jd, |path, value| {
 //!     unused.insert(path.to_string());
+//!     unused2.insert(path.to_string(), value);
 //! })?;
 //!
 //! assert_eq!(p, Package {
@@ -63,11 +66,22 @@
 //!     expected
 //! });
 //!
+//! assert_eq!(unused2, {
+//!     use serde_value::Value;
+//!     use std::iter::FromIterator;
+//!     let mut expected = Map::new();
+//!     expected.insert("dependencies.serde.typo1".to_owned(), Value::String("unused".to_owned()));
+//!     expected.insert("typo2".to_owned(), Value::Map(vec![ (Value::String("inner".to_owned()), Value::String("".to_owned())) ].into_iter().collect()));
+//!     expected.insert("typo3".to_owned(), Value::Map(Map::new()));
+//!     expected
+//! });
+//!
 //! # Ok(()) }
 //! # fn main() { try_main().unwrap() }
 //! ```
 
 extern crate serde;
+extern crate serde_value;
 
 use std::fmt::{self, Display};
 use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
@@ -75,7 +89,7 @@ use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
 /// Entry point. See crate documentation for an example.
 pub fn deserialize<'de, D, F, T>(deserializer: D, mut callback: F) -> Result<T, D::Error>
     where D: de::Deserializer<'de>,
-          F: FnMut(Path),
+          F: FnMut(Path, serde_value::Value),
           T: Deserialize<'de>
 {
     T::deserialize(Deserializer::new(deserializer, &mut callback))
@@ -90,7 +104,7 @@ pub struct Deserializer<'a, 'b, D, F: 'b> {
 }
 
 impl<'a, 'b, D, F> Deserializer<'a, 'b, D, F>
-    where F: FnMut(Path)
+    where F: FnMut(Path, serde_value::Value)
 {
     pub fn new(de: D, callback: &'b mut F) -> Self {
         Deserializer {
@@ -139,7 +153,7 @@ impl<'a> Display for Path<'a> {
 /// the callback.
 impl<'a, 'b, 'de, D, F> de::Deserializer<'de> for Deserializer<'a, 'b, D, F>
     where D: de::Deserializer<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Error = D::Error;
 
@@ -328,8 +342,9 @@ impl<'a, 'b, 'de, D, F> de::Deserializer<'de> for Deserializer<'a, 'b, D, F>
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, D::Error>
         where V: Visitor<'de>
     {
-        (self.callback)(self.path);
-        self.de.deserialize_ignored_any(visitor)
+        let value = self.de.deserialize_any(serde_value::ValueVisitor)?;
+        (self.callback)(self.path, value);
+        serde_value::Value::Unit.deserialize_ignored_any(visitor).map_err(de::Error::custom)
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, D::Error>
@@ -360,7 +375,7 @@ impl<'a, 'b, X, F> Wrap<'a, 'b, X, F> {
 /// Forwarding impl to preserve context.
 impl<'a, 'b, 'de, X, F> Visitor<'de> for Wrap<'a, 'b, X, F>
     where X: Visitor<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Value = X::Value;
 
@@ -530,7 +545,7 @@ impl<'a, 'b, 'de, X, F> Visitor<'de> for Wrap<'a, 'b, X, F>
 /// Forwarding impl to preserve context.
 impl<'a, 'b, 'de, X: 'a, F: 'b> de::EnumAccess<'de> for Wrap<'a, 'b, X, F>
     where X: de::EnumAccess<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Error = X::Error;
     type Variant = Wrap<'a, 'b, X::Variant, F>;
@@ -549,7 +564,7 @@ impl<'a, 'b, 'de, X: 'a, F: 'b> de::EnumAccess<'de> for Wrap<'a, 'b, X, F>
 /// Forwarding impl to preserve context.
 impl<'a, 'b, 'de, X, F> de::VariantAccess<'de> for Wrap<'a, 'b, X, F>
     where X: de::VariantAccess<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Error = X::Error;
 
@@ -993,7 +1008,7 @@ impl<'a, X, F> TrackedSeed<'a, X, F> {
 
 impl<'a, 'de, X, F> DeserializeSeed<'de> for TrackedSeed<'a, X, F>
     where X: DeserializeSeed<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Value = X::Value;
 
@@ -1030,7 +1045,7 @@ impl<'a, 'b, X, F> SeqAccess<'a, 'b, X, F> {
 /// Forwarding impl to preserve context.
 impl<'a, 'b, 'de, X, F> de::SeqAccess<'de> for SeqAccess<'a, 'b, X, F>
     where X: de::SeqAccess<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Error = X::Error;
 
@@ -1078,7 +1093,7 @@ impl<'a, 'b, X, F> MapAccess<'a, 'b, X, F> {
 
 impl<'a, 'b, 'de, X, F> de::MapAccess<'de> for MapAccess<'a, 'b, X, F>
     where X: de::MapAccess<'de>,
-          F: FnMut(Path)
+          F: FnMut(Path, serde_value::Value)
 {
     type Error = X::Error;
 

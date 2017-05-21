@@ -10,6 +10,7 @@ categories = ["encoding"]
 
 [dependencies]
 serde = "1.0"
+serde-value = "0.5"
 
 [dev-dependencies]
 serde_derive = "1.0"
